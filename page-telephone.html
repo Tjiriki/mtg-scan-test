@@ -30,6 +30,11 @@ pre { background: #0b0d10; border-radius: 6px; padding: 8px; font: 12px/1.45 ui-
 <body>
 <h1>SCAN-LNA-0 - camera du telephone vers le PC</h1>
 
+<p id="garde" class="ko"><strong>Le script de cette page n'a pas demarre.</strong> Soit le fichier a ete
+publie sans sa balise fermante <code>&lt;/script&gt;</code> (le cas rencontre le 2026-10-15), soit le
+javascript est bloque : dans les deux cas tout le reste de la page est fige - boutons gris, journal vide,
+et aucune erreur dans la console.</p>
+
 <h2>Configuration lue dans le fragment</h2>
 <div id="config"><em>lecture en cours...</em></div>
 
@@ -52,6 +57,13 @@ pre { background: #0b0d10; border-radius: 6px; padding: 8px; font: 12px/1.45 ui-
 <pre id="journal"></pre>
 <canvas id="toile" hidden></canvas>
 
+<!-- LE FICHIER DOIT SE TERMINER PAR la balise fermante du script, puis la balise fermante de body, puis
+     celle de html. Un element script jamais ferme laisse son texte courir jusqu'a la fin du fichier : le
+     parseur cree bien l'element (document.scripts.length = 1, text complet, new Function() le compile sans
+     erreur), mais le navigateur NE L'EXECUTE PAS, sans la moindre erreur en console. Verifie le 2026-10-15
+     sur Edge 155.0.4283.45 (spikes/SCAN-LNA-0/README.md, section 7) : aux memes octets pres, avec la balise
+     fermante le script tourne, sans elle il ne tourne pas. Le paragraphe "garde" du body est le meme signal,
+     cote utilisateur. -->
 <script>
 "use strict";
 /* SCAN-LNA-0 - page telephone d'un spike, hors solution. Aucune dependance externe.
@@ -76,6 +88,13 @@ function lireFragment() {
 
 var cfg = lireFragment();
 var flux = null;
+
+/* Garde de demarrage : tout script qui arrive ici retire le paragraphe d'alerte pose dans le body.
+   S'il reste a l'ecran, le script n'a jamais ete lance : rien de ce qui suit ne s'executera, et la
+   console restera vide. C'est exactement ce que Thomas a vu le 2026-10-15 sur la page publiee. */
+var garde = document.getElementById("garde");
+if (garde && garde.parentNode) { garde.parentNode.removeChild(garde); }
+console.log("[LNA0] Script demarre - hebergeur " + location.origin + ", fragment " + (cfg.brut ? "lu" : "ABSENT"));
 
 function el(id) { return document.getElementById(id); }
 function horodatage() { return new Date().toTimeString().slice(0, 8); }
@@ -309,5 +328,6 @@ el("btnCouper").addEventListener("click", couperCamera);
 el("btnPing").addEventListener("click", testerPing);
 el("btnEnvoi").addEventListener("click", envoyerImage);
 window.addEventListener("pagehide", couperCamera);
-
-
+</script>
+</body>
+</html>
