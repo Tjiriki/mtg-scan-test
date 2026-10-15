@@ -1,0 +1,313 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>SCAN-LNA-0 - camera du telephone vers le PC</title>
+<style>
+:root { color-scheme: dark; }
+body { margin: 0; padding: 12px; font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; background: #14161a; color: #e8eaed; }
+h1 { font-size: 17px; margin: 0 0 10px; }
+h2 { font-size: 13px; margin: 16px 0 6px; color: #9aa0a6; text-transform: uppercase; letter-spacing: 0.04em; }
+section { margin-bottom: 10px; }
+table { border-collapse: collapse; width: 100%; font-size: 13px; }
+td { padding: 2px 6px 2px 0; vertical-align: top; word-break: break-all; }
+td.k { color: #9aa0a6; width: 36%; }
+button { font: inherit; padding: 10px 14px; margin: 4px 6px 4px 0; border: 0; border-radius: 6px; background: #1a73e8; color: #fff; }
+button:disabled { background: #454a51; color: #8d9197; }
+button.secondaire { background: #3c4043; }
+label { display: block; margin: 6px 0; font-size: 14px; }
+input[type=checkbox] { margin-right: 6px; }
+code { background: #282a2e; padding: 0 3px; border-radius: 3px; }
+video { display: block; width: 100%; max-height: 40vh; background: #000; border-radius: 6px; margin-top: 8px; }
+pre { background: #0b0d10; border-radius: 6px; padding: 8px; font: 12px/1.45 ui-monospace, Consolas, monospace; white-space: pre-wrap; word-break: break-all; min-height: 8em; }
+.ok { color: #57d07b; }
+.ko { color: #f28b82; }
+.nuance { color: #9aa0a6; }
+</style>
+</head>
+<body>
+<h1>SCAN-LNA-0 - camera du telephone vers le PC</h1>
+
+<h2>Configuration lue dans le fragment</h2>
+<div id="config"><em>lecture en cours...</em></div>
+
+<h2>Camera arriere</h2>
+<section>
+  <button id="btnCamera">Demarrer la camera</button>
+  <button id="btnCouper" class="secondaire" disabled>Couper</button>
+  <video id="apercu" playsinline autoplay muted></video>
+</section>
+
+<h2>Envoi vers le PC (HTTP, reseau local)</h2>
+<section>
+  <label><input type="checkbox" id="chkAnnotation" checked>
+    envoyer avec <code>targetAddressSpace: "local"</code> (le controler : le decocher)</label>
+  <button id="btnPing" class="secondaire" disabled>Tester /ping</button>
+  <button id="btnEnvoi" disabled>Envoyer une image</button>
+</section>
+
+<h2>Journal</h2>
+<pre id="journal"></pre>
+<canvas id="toile" hidden></canvas>
+
+<script>
+"use strict";
+/* SCAN-LNA-0 - page telephone d'un spike, hors solution. Aucune dependance externe.
+ *
+ * Le fragment de l'URL (#) porte l'adresse du PC, son port et le jeton. Un fragment n'est
+ * JAMAIS transmis a l'hebergeur, et ce fichier ne construit AUCUNE URL depuis location.href :
+ * urlDuPC() est la seule source d'URL sortante, elle n'assemble que "http://" + ip + ":" + port
+ * + un chemin fixe. Le jeton n'apparait donc que dans l'en-tete X-LNA-Token de la requete
+ * adressee au PC, jamais vers l'hebergeur.
+ */
+
+function lireFragment() {
+  var brut = (location.hash || "").replace(/^#/, "");
+  var p = new URLSearchParams(brut);
+  return {
+    hote: p.get("ip") || p.get("hote") || p.get("host") || "",
+    port: p.get("port") || "",
+    jeton: p.get("jeton") || p.get("token") || "",
+    brut: brut
+  };
+}
+
+var cfg = lireFragment();
+var flux = null;
+
+function el(id) { return document.getElementById(id); }
+function horodatage() { return new Date().toTimeString().slice(0, 8); }
+
+function note(texte, classe) {
+  var ligne = document.createElement("div");
+  if (classe) { ligne.className = classe; }
+  ligne.textContent = horodatage() + "  " + texte;
+  el("journal").appendChild(ligne);
+  el("journal").scrollTop = el("journal").scrollHeight;
+  console.log("[LNA0] " + texte);
+}
+
+function troncor(texte, maxi) {
+  var t = (texte || "").replace(/\s+/g, " ").trim();
+  return t.length > maxi ? t.slice(0, maxi) + "..." : t;
+}
+
+/* Le jeton n'est jamais affiche en clair : trois caracteres, deux derniers, longueur. */
+function masque(jeton) {
+  if (!jeton) { return "(absent)"; }
+  if (jeton.length <= 6) { return "***(longueur " + jeton.length + ")"; }
+  return jeton.slice(0, 3) + "..." + jeton.slice(-2) + " (longueur " + jeton.length + ")";
+}
+
+/* Seule source d'URL sortante : l'adresse privee litturale du PC, en HTTP, chemin fixe. */
+function urlDuPC(chemin) {
+  return "http://" + cfg.hote + ":" + cfg.port + chemin;
+}
+
+function ecrireConfig() {
+  var mediaOk = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+  var lignes = [
+    ["Hebergeur (origine)", location.origin],
+    ["Protocole", location.protocol],
+    ["Contexte securise", window.isSecureContext ? "OUI" : "NON"],
+    ["Adresse du PC", cfg.hote || "(MANQUANTE)"],
+    ["Port du PC", cfg.port || "(MANQUANT)"],
+    ["Jeton lu", masque(cfg.jeton)],
+    ["getUserMedia", mediaOk ? "disponible" : "INDISPONIBLE"],
+    ["Requetes vers", (cfg.hote && cfg.port) ? urlDuPC("/upload") : "(ip et port a fournir dans le fragment)"]
+  ];
+  el("config").innerHTML = "";
+  var table = document.createElement("table");
+  for (var j = 0; j < lignes.length; j++) {
+    var rang = table.insertRow();
+    var cle = rang.insertCell();
+    var valeur = rang.insertCell();
+    cle.className = "k";
+    cle.textContent = lignes[j][0];
+    valeur.textContent = lignes[j][1];
+  }
+  el("config").appendChild(table);
+  sondePermissions();
+
+}
+
+/* --- Permission Local Network Access ---------------------------------------------------
+   MDN : la directive "local-network-access" est l'alias des directives plus recentes
+   "local-network" et "loopback-network". Les deux denominations sont sondees : une reponse
+   refusee n'est pas une panne du spike, c'est la mesure elle-meme.                         */
+
+function sondePermissions() {
+  if (!navigator.permissions || !navigator.permissions.query) {
+    note("Permission : navigator.permissions.query indisponible", "nuance");
+    return;
+  }
+  sondeUnePermission("local-network-access");
+  sondeUnePermission("local-network");
+}
+
+function sondeUnePermission(nom) {
+  var demande;
+  try {
+    demande = navigator.permissions.query({ name: nom });
+  } catch (e) {
+    note("Permission " + nom + " : sonde refusee - " + e.name + ": " + e.message, "nuance");
+    return;
+  }
+  demande.then(function (etat) {
+    note("Permission " + nom + " : " + etat.state);
+  }, function (e) {
+    note("Permission " + nom + " : inconnue de ce moteur - " + e.name + ": " + e.message, "nuance");
+  });
+}
+
+/* --- Camera arriere, flux continu ------------------------------------------------------- */
+
+function demarrerCamera() {
+  if (!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)) {
+    note("Camera : getUserMedia indisponible (la page doit etre servie en HTTPS)", "ko");
+    return;
+  }
+  var essais = [
+    ["arriere + 1920x1080", { audio: false, video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } } }],
+    ["arriere seule", { audio: false, video: { facingMode: { ideal: "environment" } } }],
+    ["camera par defaut", { audio: false, video: true }]
+  ];
+  note("Camera : demande en cours (3 variantes de contraintes)...");
+  essayerContrainte(essais, 0);
+}
+
+function essayerContrainte(essais, index) {
+  if (index >= essais.length) {
+    note("Camera REFUSEE : aucune des " + essais.length + " variantes n'a abouti", "ko");
+    return;
+  }
+  var nom = essais[index][0];
+  navigator.mediaDevices.getUserMedia(essais[index][1]).then(function (nouveauFlux) {
+    flux = nouveauFlux;
+    var apercu = el("apercu");
+    apercu.srcObject = flux;
+    var lecture = apercu.play();
+    if (lecture && lecture.catch) {
+      lecture.catch(function (e) { note("Apercu refuse par le lecteur : " + e.name + ": " + e.message, "ko"); });
+    }
+    var piste = flux.getVideoTracks()[0];
+    var reglages = (piste && piste.getSettings) ? piste.getSettings() : {};
+    note("Camera ACCORDEE (variante : " + nom + ") - reglages : " + JSON.stringify(reglages), "ok");
+    el("btnCamera").disabled = true;
+    el("btnCouper").disabled = false;
+    el("btnEnvoi").disabled = false;
+  }, function (e) {
+    note("Camera refusee (" + nom + ") : " + e.name + ": " + e.message, "ko");
+    essayerContrainte(essais, index + 1);
+  });
+}
+
+function couperCamera() {
+  if (flux) {
+    flux.getTracks().forEach(function (piste) { piste.stop(); });
+    flux = null;
+    el("apercu").srcObject = null;
+    el("btnCamera").disabled = false;
+    el("btnCouper").disabled = true;
+    el("btnEnvoi").disabled = true;
+    note("Camera coupee : flux arrete, lampe liberee");
+  }
+}
+
+/* --- Requetes au recepteur ---------------------------------------------------------------
+   L'annotation targetAddressSpace vaut "local" ou rien du tout : c'est la variable que le
+   spike mesure. Decocher la case = controle negatif, meme requete sans annotation.          */
+
+function initierRequete(methode, corps) {
+  var init = { method: methode, mode: "cors", cache: "no-store" };
+  if (corps) { init.body = corps; }
+  if (el("chkAnnotation").checked) { init.targetAddressSpace = "local"; }
+  return init;
+}
+
+function decrireAnnotation(init) {
+  return init.targetAddressSpace
+    ? " [annotation targetAddressSpace=" + init.targetAddressSpace + "]"
+    : " [SANS annotation]";
+}
+
+function testerPing() {
+  if (!configComplete) { return; }
+  var init = initierRequete("GET", null);
+  note("Ping " + urlDuPC("/ping") + decrireAnnotation(init));
+  var debut = performance.now();
+  fetch(urlDuPC("/ping"), init).then(function (rep) {
+    return rep.text().then(function (corps) {
+      note("Ping : HTTP " + rep.status + " - " + Math.round(performance.now() - debut) + " ms - " + troncor(corps, 140), rep.ok ? "ok" : "ko");
+    });
+  }, function (e) {
+    note("Ping : ECHECHE - " + e.name + ": " + e.message, "ko");
+  });
+}
+
+function envoyerImage() {
+  var apercu = el("apercu");
+  var largeur = apercu.videoWidth;
+  var hauteur = apercu.videoHeight;
+  if (!flux || !largeur || !hauteur) {
+    note("Capture impossible : aucun flux video pret (demarre d'abord la camera)", "ko");
+    return;
+  }
+  var toile = el("toile");
+  toile.width = largeur;
+  toile.height = hauteur;
+  toile.getContext("2d").drawImage(apercu, 0, 0, largeur, hauteur);
+  toile.toBlob(function (image) {
+    if (!image) { note("Capture impossible : canvas.toBlob a renvoye null", "ko"); return; }
+    envoyer(image, largeur + "x" + hauteur);
+  }, "image/jpeg", 0.85);
+}
+
+function envoyer(image, dimensions) {
+  if (!configComplete) { return; }
+  var init = initierRequete("POST", image);
+  init.headers = {
+    "X-LNA-Token": cfg.jeton,
+    "X-LNA-Dimensions": dimensions,
+    "X-LNA-Heure-Telephone": new Date().toISOString()
+  };
+  note("Envoi : " + image.size + " octets (" + dimensions + ", JPEG qualite 0.85) vers "
+    + urlDuPC("/upload") + decrireAnnotation(init) + ", jeton " + masque(cfg.jeton));
+  var debut = performance.now();
+  fetch(urlDuPC("/upload"), init).then(function (rep) {
+    return rep.text().then(function (corps) {
+      var fichier = rep.headers.get("X-LNA-Fichier") || "(en-tete absent)";
+      note("Envoi : HTTP " + rep.status + " " + (rep.statusText || "") + " - "
+        + Math.round(performance.now() - debut) + " ms - fichier cote PC : " + fichier
+        + " - reponse : " + troncor(corps, 180), rep.ok ? "ok" : "ko");
+    });
+  }, function (e) {
+    note("Envoi : ECHECHE - " + e.name + ": " + e.message, "ko");
+    note("Un TypeError sans detail melange quatre causes : mixed content bloque, refus Local Network Access, CORS, connexion refusee. Compare avec /ping, puis decoche l'annotation.", "nuance");
+  });
+}
+
+/* --- Branchement ------------------------------------------------------------------------ */
+
+ecrireConfig();
+
+var configComplete = !!(cfg.hote && cfg.port);
+if (!configComplete) {
+  note("Fragment incomplet : ouvrir l'URL termine par #ip=<ip du PC>&port=<port>&jeton=<jeton>", "ko");
+} else {
+  el("btnPing").disabled = false;
+  note("Configuration lue. Ordre du test : /ping, puis la camera, puis l'envoi.");
+}
+if (!window.isSecureContext) {
+  note("Contexte NON securise : ce navigateur refusera getUserMedia et la permission Local Network Access", "ko");
+}
+
+el("btnCamera").addEventListener("click", demarrerCamera);
+el("btnCouper").addEventListener("click", couperCamera);
+el("btnPing").addEventListener("click", testerPing);
+el("btnEnvoi").addEventListener("click", envoyerImage);
+window.addEventListener("pagehide", couperCamera);
+
+
